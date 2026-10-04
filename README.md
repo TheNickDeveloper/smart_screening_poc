@@ -8,7 +8,7 @@
 
 ## Application UIUX
 
-![image](https://github.com/YOUR_USERNAME/crm_smart_screening/blob/main/application_uiux.png)
+![image](https://github.com/YOUR_USERNAME/smart_screening_poc/blob/main/application_uiux.png)
 
 ---
 
