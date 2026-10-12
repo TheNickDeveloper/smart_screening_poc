@@ -195,9 +195,12 @@ def _maturity_subquery(holding_conditions, h_alias, joiner):
         params.extend(p)
 
     combined = f" {joiner} ".join(parts)
+    # The parentheses matter: AND binds tighter than OR, so without them only
+    # the first part would stay correlated to the outer customer and the rest
+    # would match holdings belonging to every customer.
     sql = (
         f"(SELECT MIN({h_alias}.maturity_date) FROM holdings {h_alias} "
-        f"WHERE {h_alias}.customer_id = c.customer_id AND {combined})"
+        f"WHERE {h_alias}.customer_id = c.customer_id AND ({combined}))"
     )
     return sql, params
 
