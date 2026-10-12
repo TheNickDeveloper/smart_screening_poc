@@ -38,7 +38,7 @@ RM Natural Language → Intent + Condition Extraction → Filter Accumulation �
 
 **Step 1 | RM Natural Language**
 
-Input is a plain-language request in Chinese or English. Example: *"幫我找十月底美元大額定存到期的客人"*. No forms, no dropdowns, no SQL.
+Input is a plain-language request in Chinese or English. Example: *"Find clients with USD large time deposits maturing at the end of October"*. No forms, no dropdowns, no SQL.
 
 **Step 2 | Intent + Condition Extraction**
 
@@ -46,7 +46,7 @@ DeepSeek parses the message into structured JSON. It distinguishes intent (`filt
 
 **Step 3 | Filter Accumulation**
 
-Conditions accumulate across turns in `session_state`. If the RM says "只要 UHNW 的" after the first query, the system appends `segment = UHNW`. If they say "改成 100 萬以上", the system replaces the amount threshold (same field → remove old, add new). The RM can add, modify, or reset at any point.
+Conditions accumulate across turns in `session_state`. If the RM says "UHNW only" after the first query, the system appends `segment = UHNW`. If they say "change it to above 1 million", the system replaces the amount threshold (same field → remove old, add new). The RM can add, modify, or reset at any point.
 
 **Step 4 | SQL Generation (via MCP)**
 
@@ -105,7 +105,7 @@ Streamlit loads session state and renders the chat interface. The sidebar shows 
 
 **Step 7 | RM Refines Filters — Conversational**
 
-The RM can add conditions ("只要風險評級 C1 或 C2 的"), modify them ("金額門檻改成 100 萬"), or reset ("重來"). Each turn re-runs the full query from scratch (not incremental refinement), which keeps semantics clean and predictable.
+The RM can add conditions ("risk rating C1 or C2 only"), modify them ("change the amount threshold to 1 million"), or reset ("start over"). Each turn re-runs the full query from scratch (not incremental refinement), which keeps semantics clean and predictable.
 
 **Step 8 | RM Reviews Short List**
 
@@ -113,7 +113,7 @@ The list is displayed as a Markdown table: client ID, name, segment, risk profil
 
 **Step 9 | RM Requests Lead Generation**
 
-Typing "生成 leads" triggers Phase 2. The MCP Server's `generate_leads` tool fetches each client's full profile: AUM by asset class, all active holdings, and product-level details (bond ratings, stock sectors, fund categories, FX pairs, deposit terms).
+Typing "generate leads" triggers Phase 2. The MCP Server's `generate_leads` tool fetches each client's full profile: AUM by asset class, all active holdings, and product-level details (bond ratings, stock sectors, fund categories, FX pairs, deposit terms).
 
 **Step 10 | Batched Lead Generation**
 
@@ -178,13 +178,13 @@ session_state → next turn's condition accumulation
 
 ### 1. Turns Natural Language into Structured CRM Filters
 
-The RM no longer translates intent into dropdowns. "十月底美元大額定存到期" becomes five structured conditions in one shot. "同時持有科技股和債券" becomes two EXISTS subqueries. The system speaks the RM's language, not the database's.
+The RM no longer translates intent into dropdowns. "USD large time deposits maturing at the end of October" becomes five structured conditions in one shot. "holds tech stocks and bonds at once" becomes two EXISTS subqueries. The system speaks the RM's language, not the database's.
 
 **Business value**: Campaign prep time drops from 15+ minutes to under 60 seconds.
 
 ### 2. Accumulative Filtering, Not Form-Filling
 
-Conditions accumulate across turns. The RM can start broad ("美元定存到期") and narrow progressively ("只要 UHNW" → "加風險評級 C1-C2" → "限定台北"). No need to restart the query. No need to remember what was filtered before — the sidebar always shows current conditions.
+Conditions accumulate across turns. The RM can start broad ("USD deposits maturing") and narrow progressively ("UHNW only" → "add risk rating C1-C2" → "restrict to Taipei"). No need to restart the query. No need to remember what was filtered before — the sidebar always shows current conditions.
 
 **Business value**: RM explores the client base fluidly, the way they'd think through a campaign.
 
@@ -202,7 +202,7 @@ Every `screen_customers` call writes to `audit_log`: who queried, what was asked
 
 ### 5. AI-Generated Talking Points Grounded in Client Profile
 
-Lead generation isn't generic. Each client's full profile — AUM breakdown, existing holdings, risk rating, maturity dates — is fed to DeepSeek. The output references specific amounts and dates: *"您的美元9個月定存（100萬美元）將於10/26到期..."*. Recommendations respect risk profile: C1/C2 clients get bonds and savings insurance, not tech funds.
+Lead generation isn't generic. Each client's full profile — AUM breakdown, existing holdings, risk rating, maturity dates — is fed to DeepSeek. The output references specific amounts and dates: *"Your 9-month USD time deposit (USD 1 million) matures on 10/26..."*. Recommendations respect risk profile: C1/C2 clients get bonds and savings insurance, not tech funds.
 
 **Business value**: RMs walk into calls with a tailored script, not a blank page.
 

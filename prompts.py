@@ -1,147 +1,168 @@
 """
 prompts.py
-集中管理所有 DeepSeek prompt：
-1. INTENT_PARSE_PROMPT   — 意图判断 + 条件抽取
-2. LEADS_GEN_PROMPT      — 话术 + 产品推荐生成
+All DeepSeek prompts for the CRM screening assistant:
+1. INTENT_PARSE_PROMPT   - intent detection + condition extraction
+2. LEADS_GEN_PROMPT      - talking points + product recommendations
+
+Language policy
+---------------
+The CRM data model, the UI and every generated field are English. The RM may
+type in Chinese or English; the parser is instructed to understand either and
+to always emit English field values drawn from the vocabulary below.
 """
 
 from datetime import date
 
 
 # ---------------------------------------------------------------------------
-# 1. 意图判断 + 条件抽取
+# 1. Intent detection + condition extraction
 # ---------------------------------------------------------------------------
 
-INTENT_PARSE_PROMPT = """你是一个私人银行 CRM 对话助手。用户会用自然语言逐步描述筛选条件。
+INTENT_PARSE_PROMPT = """You are a private-banking CRM conversation assistant. The RM describes screening conditions in natural language, one turn at a time.
 
-【任务】
-根据「用户最新消息」和「当前已有条件」，输出一个 JSON：
+[INPUT LANGUAGE]
+The RM may write in Chinese or English. Understand either one, but ALWAYS emit
+field values in English, using exactly the vocabulary listed under AVAILABLE
+FIELDS. Never emit a Chinese field value.
+
+[TASK]
+Given the LATEST USER MESSAGE and the CURRENT CONDITIONS, output one JSON object:
 {{
   "intent": "filter | modify_filter | reset | generate_leads | chat",
   "add_conditions": [ ... ],
   "remove_conditions": [ ... ],
-  "reply": "若 intent 是 chat 时的回覆，否则空字符串"
+  "reply": "reply text when intent is chat, otherwise an empty string"
 }}
 
-intent 判断规则：
-- 用户在描述筛选条件（新增）→ "filter"
-- 用户在改/删已有条件 → "modify_filter"
-- 用户说「重来 / 清空 / 重新开始」→ "reset"
-- 用户说「生成话术 / leads / 推荐 / 联系建议」→ "generate_leads"
-- 其他（闲聊、问问题）→ "chat"
+Intent rules:
+- The RM is describing a new screening condition -> "filter"
+- The RM is changing or removing an existing condition -> "modify_filter"
+- The RM says start over / reset / clear (the same request expressed in Chinese
+  counts too) -> "reset"
+- The RM asks for talking points / leads / recommendations -> "generate_leads"
+- Anything else (small talk, questions) -> "chat"
 
-条件格式：每项是
+Condition format - each item is:
 {{"entity": "customer" | "holding", "field": "...", "operator": "...", "value": ...}}
-operator 可用：=, !=, >, <, >=, <=, between, in, contains
-between 的 value 是 [起始, 结束]
+Available operators: =, !=, >, <, >=, <=, between, in, contains
+For "between", the value is [start, end].
 
-【可用字段】
+[AVAILABLE FIELDS]
 
-customer 维度（entity="customer"）：
-- name (文字)
-- age (数字)
+customer dimension (entity="customer"):
+- name (text)
+- age (number)
 - gender (M/F)
-- city (文字)
-- rm_id (文字，如 RM01)
-- branch (文字)
+- city (text, e.g. Taipei, Taichung, Kaohsiung, Hsinchu, Tainan, Taoyuan)
+- rm_id (text, e.g. RM01)
+- branch (text, e.g. Taipei Branch)
 - segment (UHNW / HNW / Affluent)
-- risk_profile (C1 保守 ~ C5 积极)
-- kyc_expiry_date (日期 YYYY-MM-DD)
+- risk_profile (C1 conservative ~ C5 aggressive)
+- kyc_expiry_date (date YYYY-MM-DD)
 
-holding 主表维度（entity="holding"）：
+holding dimension (entity="holding"):
 - asset_class (DEPOSIT / FUND / BOND / STOCK / FX / STRUCTURED / INSURANCE)
-- product_type (定存 / 基金 / 债券 / 股票 / 外汇 / 结构性产品 / 保单)
+- product_type (Time Deposit / Fund / Bond / Stock / FX / Structured Product / Insurance Policy)
 - currency (USD / TWD / EUR / JPY / CNY)
-- amount_usd (等值美元金额)
-- maturity_date (到期日 YYYY-MM-DD)
+- amount_usd (USD-equivalent amount)
+- maturity_date (date YYYY-MM-DD)
 - status (active / matured / redeemed)
 - risk_level (R1 ~ R5)
 
-债券专属字段（asset_class=BOND）：
-- issuer (发行机构)
-- coupon_rate (票面利率 %)
+Bond-only fields (asset_class=BOND):
+- issuer (e.g. Formosa Plastics Group)
+- coupon_rate (coupon rate %)
 - credit_rating (AAA / AA / A / BBB ...)
-- next_coupon_date (下次付息日)
+- next_coupon_date (next coupon date)
 
-股票专属字段（asset_class=STOCK）：
-- ticker (代码)
+Stock-only fields (asset_class=STOCK):
+- ticker (e.g. 2330.TW)
 - market (US / TW / HK)
-- sector (科技 / 金融 / 能源 / 医疗 ...)
+- sector (Technology / Telecom / Financials / Energy / Healthcare)
 
-基金专属字段（asset_class=FUND）：
-- fund_house (基金公司)
-- fund_category (股票型 / 债券型 / 平衡型 / 货币型)
-- region (全球 / 美国 / 新兴市场 ...)
+Fund-only fields (asset_class=FUND):
+- fund_house (e.g. BlackRock)
+- fund_category (Equity / Bond / Balanced / Money Market)
+- region (Global / US / Emerging Markets)
 
-外汇专属字段（asset_class=FX）：
-- pair (如 USD/JPY)
+FX-only fields (asset_class=FX):
+- pair (e.g. USD/JPY)
 - position_type (spot / forward / swap)
 
-【固定业务规则】
-1. 「大额」美元定存 = amount_usd >= 500000（若用户没说金额，默认套用此规则）
-2. 「十月底」= maturity_date between '2026-10-21' and '2026-10-31'
-3. 金额比较一律使用 amount_usd
-4. 除非用户明说，否则默认加 status = 'active'
-5. 涉及「同时持有 A 和 B」→ 拆成两个 holding 条件（AND），由后端用 EXISTS 处理
-6. 今天是 {today}
+[FIXED BUSINESS RULES]
+1. A "large-amount" USD time deposit means amount_usd >= 500000. Apply this
+   threshold by default when the RM mentions a large deposit without a figure.
+2. "End of October" means maturity_date between '2026-10-21' and '2026-10-31'.
+3. Always compare amounts on amount_usd.
+4. Unless the RM says otherwise, add status = 'active'.
+5. "Holds A and also holds B" must be split into two holding conditions (AND);
+   the backend resolves them as independent EXISTS subqueries.
+6. Today is {today}.
 
-【当前已有条件】
+[CURRENT CONDITIONS]
 {current_conditions_json}
 
-【输出要求】
-- 只输出 JSON，不要任何解释文字
-- 若用户改同一字段的值，把旧字段放进 remove_conditions，新值放 add_conditions
-- 若用户只是新增字段，只放 add_conditions
+[OUTPUT REQUIREMENTS]
+- Output JSON only, with no explanatory text.
+- If the RM changes the value of an existing field, put the old field into
+  remove_conditions and the new value into add_conditions.
+- If the RM only adds a new field, populate add_conditions only.
 """
 
 
 # ---------------------------------------------------------------------------
-# 2. Leads 生成（话术 + 产品推荐）
+# 2. Lead generation (talking points + product recommendations)
 # ---------------------------------------------------------------------------
 
-LEADS_GEN_PROMPT = """你是一个私人银行资深 RM 助理。请根据客户完整画像，为每位客户生成联系话术与产品推荐。
+LEADS_GEN_PROMPT = """You are a senior private-banking RM assistant. For each client profile below, write outreach talking points and product recommendations.
 
-【活动背景】
+[CAMPAIGN CONTEXT]
 {campaign_context}
 
-【客户画像】
+[CLIENT PROFILES]
 {profiles_json}
 
-【生成要求】
-对每位客户，输出：
-1. 开场问候（称呼客户姓名，礼貌专业）
-2. 触发点（引用其持仓中即将到期/值得关注的部分，带具体金额与日期）
-3. 产品推荐（1-2 个，基于客户风险评级、现有组合缺口、到期资金规模）
-4. 行动呼吁（邀约下一步，例如电话会议、到行洽谈）
+[WHAT TO PRODUCE FOR EACH CLIENT]
+1. Opening greeting (address the client by name; polite and professional)
+2. Trigger (reference the holding that is maturing or otherwise noteworthy,
+   quoting the specific amount and date)
+3. Product recommendations (1-2, based on the risk rating, portfolio gaps and
+   the size of the maturing amount)
+4. Call to action (invite the next step, e.g. a phone call or a branch meeting)
 
-【推荐逻辑参考】
-- 客户 risk_profile 越保守（C1/C2），推荐越稳健（债券、定存、储蓄险、保本结构型）
-- 客户 risk_profile 越积极（C4/C5），可推荐股票型基金、结构性产品
-- 观察组合缺口：若几乎没有债券，可推投资级债；若没保险，可推储蓄险
-- 到期金额大（>100 万美元）→ 建议分批配置，不要单一产品
-- 注意币别：美元到期资金，优先推荐美元计价产品
+[RECOMMENDATION LOGIC]
+- The more conservative the risk_profile (C1/C2), the more defensive the
+  recommendation: bonds, time deposits, savings insurance, capital-protected
+  structured products.
+- The more aggressive the risk_profile (C4/C5), the more suitable equity funds
+  and structured products become.
+- Look for portfolio gaps: few bonds -> suggest investment-grade bonds; no
+  insurance -> suggest savings insurance.
+- Large maturing amounts (> USD 1 million) -> recommend phased allocation
+  rather than a single product.
+- Mind the currency: prefer USD-denominated products for maturing USD funds.
 
-【输出格式】
-只输出 JSON：
+[OUTPUT FORMAT]
+Output JSON only:
 {{
   "leads": [
     {{
       "customer_id": "...",
       "name": "...",
-      "talking_points": "一段完整的话术（200字以内）",
+      "talking_points": "one complete script, within 200 words",
       "recommended_products": [
-        {{"product": "产品名称", "reason": "推荐理由（一句话）"}}
+        {{"product": "product name", "reason": "one-sentence rationale"}}
       ]
     }}
   ]
 }}
 
-不要输出任何 JSON 以外的文字。
+Do not output anything other than the JSON.
 """
 
 
 # ---------------------------------------------------------------------------
-# 辅助函数
+# Helper functions
 # ---------------------------------------------------------------------------
 
 def render_intent_prompt(current_conditions: list) -> str:

@@ -1,7 +1,7 @@
 """
-streamlit_app.py
-Streamlit 前端：CRM Smart Screening Chatbot
-通过 st.session_state 维持对话，调用 MCP Server 完成筛选
+app.py
+Streamlit front end: CRM Smart Screening Chatbot.
+Keeps conversation state in st.session_state and calls the MCP Server to screen.
 """
 
 import asyncio
@@ -20,7 +20,7 @@ from prompts import render_intent_prompt, render_leads_prompt
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# 页面配置
+# Page config
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
@@ -30,10 +30,10 @@ st.set_page_config(
 )
 
 st.title("🏦 CRM Smart Screening")
-st.caption("私人银行客户筛选助手 · 自然语言对话 · 实时 Short List")
+st.caption("Private-banking client screening assistant \u00b7 natural-language chat \u00b7 live short list")
 
 # ---------------------------------------------------------------------------
-# Session State 初始化
+# Session state initialisation
 # ---------------------------------------------------------------------------
 
 if "session_id" not in st.session_state:
@@ -47,15 +47,15 @@ if "last_result_ids" not in st.session_state:
 if "last_result_data" not in st.session_state:
     st.session_state.last_result_data = []
 if "campaign_context" not in st.session_state:
-    st.session_state.campaign_context = "美元定存到期续存活动"
+    st.session_state.campaign_context = "USD time deposit maturity renewal campaign"
 
 
 # ---------------------------------------------------------------------------
-# MCP Server 调用（异步 → 同步封装）
+# MCP Server calls (async wrapped for sync use)
 # ---------------------------------------------------------------------------
 
 async def _call_mcp_tool(tool_name: str, arguments: dict):
-    """启动 MCP Server 子进程，调用指定 tool"""
+    """Start the MCP Server subprocess and call the given tool."""
     server_params = StdioServerParameters(
         command="python",
         args=["server.py"],
@@ -70,7 +70,7 @@ async def _call_mcp_tool(tool_name: str, arguments: dict):
 
 
 def call_mcp(tool_name: str, arguments: dict) -> dict:
-    """同步封装 MCP 调用（Streamlit 不支持 async 主循环）"""
+    """Blocking wrapper around the MCP call (Streamlit has no async main loop)."""
     try:
         return asyncio.run(_call_mcp_tool(tool_name, arguments))
     except Exception as e:
@@ -78,7 +78,7 @@ def call_mcp(tool_name: str, arguments: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# DeepSeek 调用
+# DeepSeek calls
 # ---------------------------------------------------------------------------
 
 def deepseek_json(system_prompt: str, user_prompt: str, max_tokens: int = 4096) -> dict:
@@ -102,21 +102,22 @@ def deepseek_json(system_prompt: str, user_prompt: str, max_tokens: int = 4096) 
     content = choice.message.content
 
     if not content:
-        raise RuntimeError("DeepSeek 返回空内容")
+        raise RuntimeError("DeepSeek returned empty content")
     if choice.finish_reason == "length":
         raise RuntimeError(
-            f"输出被 max_tokens({max_tokens}) 截断，请调高或减少每批客户数量。"
+            f"Output truncated by max_tokens({max_tokens}); raise the limit or "
+            f"reduce the number of clients per batch."
         )
 
     return json.loads(content)
 
 
 # ---------------------------------------------------------------------------
-# 对话处理
+# Conversation handling
 # ---------------------------------------------------------------------------
 
 def apply_condition_changes(add: list, remove: list):
-    """先移除旧字段，再追加新条件"""
+    """Remove matching old fields first, then append the new conditions."""
     if remove:
         remove_fields = {(r.get("entity"), r.get("field")) for r in remove}
         st.session_state.conditions = [
@@ -134,16 +135,16 @@ def apply_condition_changes(add: list, remove: list):
 
 
 def process_message(user_msg: str) -> str:
-    """处理用户消息，返回 Bot 回复（Markdown 文本）"""
-    # 1. DeepSeek 解析意图
-    system_prompt = "你是一个 CRM 助手，只输出 JSON。"
+    """Handle a user message and return the bot reply as Markdown."""
+    # 1. Parse the intent with DeepSeek
+    system_prompt = "You are a CRM assistant. Output JSON only."
     user_prompt = render_intent_prompt(st.session_state.conditions) + \
-        f"\n\n【用户最新消息】\n{user_msg}"
+        f"\n\n[LATEST USER MESSAGE]\n{user_msg}"
 
     try:
         parsed = deepseek_json(system_prompt, user_prompt, max_tokens=2048)
     except Exception as e:
-        return f"**[解析失败]** {e}"
+        return f"**[PARSE FAILED]** {e}"
 
     intent = parsed.get("intent", "chat")
 
@@ -152,7 +153,7 @@ def process_message(user_msg: str) -> str:
         st.session_state.conditions = []
         st.session_state.last_result_ids = []
         st.session_state.last_result_data = []
-        return "已清空所有筛选条件。请告诉我新的筛选需求。"
+        return "All screening conditions cleared. Tell me the new criteria."
 
     # 3. filter / modify_filter
     if intent in ("filter", "modify_filter"):
@@ -162,7 +163,8 @@ def process_message(user_msg: str) -> str:
         )
 
         if not st.session_state.conditions:
-            return "目前没有筛选条件。请描述你想找的客户，例如「十月底美元大额定存到期的客人」。"
+            return ("No screening conditions yet. Describe the clients you want, "
+                    "e.g. \"USD large time deposits maturing at the end of October\".")
 
         result = call_mcp("screen_customers", {
             "conditions": st.session_state.conditions,
@@ -172,48 +174,54 @@ def process_message(user_msg: str) -> str:
         })
 
         if "error" in result:
-            return f"**[查询错误]** {result['error']}"
+            return f"**[QUERY ERROR]** {result['error']}"
 
         customers = result.get("customers", [])
         st.session_state.last_result_ids = [c["customer_id"] for c in customers]
         st.session_state.last_result_data = customers
 
-        # 格式化表格
+        # Format the result table
         lines = [
-            f"**当前条件**（{len(st.session_state.conditions)} 个）：",
+            f"**Current conditions** ({len(st.session_state.conditions)}):",
             f"`{json.dumps(st.session_state.conditions, ensure_ascii=False)}`",
             "",
-            f"找到 **{len(customers)}** 位客户：",
+            f"Found **{len(customers)}** clients:",
             "",
         ]
 
         if customers:
-            lines.append("| 客户号 | 姓名 | 分层 | 风险 | AUM(USD) | RM | 联系方式 |")
-            lines.append("|--------|------|------|------|----------|----|----------|")
+            lines.append(
+                "| Client ID | Name | Segment | Risk | AUM(USD) | Maturity | RM | Contact |"
+            )
+            lines.append(
+                "|--------|------|------|------|----------|----------|----|----------|"
+            )
             for c in customers:
                 aum = f"{c.get('aum_usd', 0):,.0f}"
+                maturity = c.get("matched_maturity_date") or "-"
                 lines.append(
                     f"| {c['customer_id']} | {c['name']} | {c.get('segment','')} "
-                    f"| {c.get('risk_profile','')} | {aum} "
+                    f"| {c.get('risk_profile','')} | {aum} | {maturity} "
                     f"| {c.get('rm_id','')} | {c.get('contact_phone','')} |"
                 )
             lines.append("")
             lines.append("---")
-            lines.append("下一步你可以：")
-            lines.append("- 继续加条件（例如：只要 UHNW、加风险评级 C1-C2）")
-            lines.append("- 说「生成 leads」产出联系话术与产品推荐")
-            lines.append("- 说「重来」清空条件")
+            lines.append("Next you can:")
+            lines.append("- Add more conditions (e.g. UHNW only, risk C1-C2)")
+            lines.append("- Type \"generate leads\" to produce talking points and product picks")
+            lines.append("- Type \"start over\" to clear the conditions")
         else:
-            lines.append("（无符合条件的客户）")
+            lines.append("(no matching clients)")
             lines.append("")
-            lines.append("要不要放宽条件再试？或说「重来」清空条件。")
+            lines.append("Try relaxing the conditions, or type \"start over\" to clear them.")
 
         return "\n".join(lines)
 
-    # 4. generate_leads（分批生成）
+    # 4. generate_leads (batched)
     if intent == "generate_leads":
         if not st.session_state.last_result_ids:
-            return "还没有名单。请先描述筛选条件，例如「十月底美元大额定存到期的客人」。"
+            return ("No short list yet. Describe the screening conditions first, "
+                    "e.g. \"USD large time deposits maturing at the end of October\".")
 
         result = call_mcp("generate_leads", {
             "customer_ids": st.session_state.last_result_ids,
@@ -221,15 +229,15 @@ def process_message(user_msg: str) -> str:
         })
 
         if "error" in result:
-            return f"**[画像拉取错误]** {result['error']}"
+            return f"**[PROFILE FETCH ERROR]** {result['error']}"
 
         profiles = result.get("profiles", [])
         if not profiles:
-            return "没有可生成话术的客户。"
+            return "No clients to generate talking points for."
 
-        lines = [f"**为 {len(profiles)} 位客户生成联系建议**（分批生成中）：", ""]
+        lines = [f"**Generating outreach suggestions for {len(profiles)} clients** (batched):", ""]
 
-        # 分批：每批 5 位
+        # Batch size: 5 clients per call
         BATCH_SIZE = 5
         total_batches = (len(profiles) + BATCH_SIZE - 1) // BATCH_SIZE
 
@@ -240,20 +248,20 @@ def process_message(user_msg: str) -> str:
             prompt = render_leads_prompt(st.session_state.campaign_context, batch)
             try:
                 leads_result = deepseek_json(
-                    system_prompt="你是一个私人银行资深 RM 助理，只输出 JSON。",
+                    system_prompt="You are a senior private-banking RM assistant. Output JSON only.",
                     user_prompt=prompt,
                     max_tokens=4096,
                 )
             except Exception as e:
-                lines.append(f"> ⚠️ 第 {batch_no}/{total_batches} 批生成失败：{e}")
+                lines.append(f"> \u26a0\ufe0f Batch {batch_no}/{total_batches} failed: {e}")
                 lines.append("")
                 continue
 
             for lead in leads_result.get("leads", []):
                 lines.append(f"### {lead['customer_id']} {lead['name']}")
-                lines.append(f"**话术**：{lead['talking_points']}")
+                lines.append(f"**Talking points**: {lead['talking_points']}")
                 if lead.get("recommended_products"):
-                    lines.append("**推荐产品**：")
+                    lines.append("**Recommended products**:")
                     for p in lead["recommended_products"]:
                         lines.append(f"- {p['product']}：{p['reason']}")
                 lines.append("")
@@ -261,22 +269,22 @@ def process_message(user_msg: str) -> str:
         return "\n".join(lines)
 
     # 5. chat
-    return parsed.get("reply", "我可以帮你筛选客户名单。请描述条件。")
+    return parsed.get("reply", "I can help you screen the client list. Describe your criteria.")
 
 
 # ---------------------------------------------------------------------------
-# 侧边栏
+# Sidebar
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("⚙️ 设置")
+    st.header("\u2699\ufe0f Settings")
     st.session_state.campaign_context = st.text_input(
-        "活动背景",
+        "Campaign context",
         value=st.session_state.campaign_context,
     )
 
     st.divider()
-    st.header("📋 当前条件")
+    st.header("\U0001f4cb Current conditions")
     if st.session_state.conditions:
         for i, c in enumerate(st.session_state.conditions):
             st.code(
@@ -284,10 +292,10 @@ with st.sidebar:
                 f"{c.get('operator')} {c.get('value')}"
             )
     else:
-        st.caption("（无）")
+        st.caption("(none)")
 
     st.divider()
-    if st.button("🗑️ 清空条件", use_container_width=True):
+    if st.button("\U0001f5d1\ufe0f Clear conditions", use_container_width=True):
         st.session_state.conditions = []
         st.session_state.last_result_ids = []
         st.session_state.last_result_data = []
@@ -298,7 +306,7 @@ with st.sidebar:
 
 
 # ---------------------------------------------------------------------------
-# 聊天历史显示
+# Chat history
 # ---------------------------------------------------------------------------
 
 for msg in st.session_state.chat_history:
@@ -306,21 +314,26 @@ for msg in st.session_state.chat_history:
         st.markdown(msg["content"])
 
 # ---------------------------------------------------------------------------
-# 用户输入
+# User input
 # ---------------------------------------------------------------------------
 
-user_input = st.chat_input("描述你想筛选的客户，例如：十月底美元大额定存到期的客人")
+user_input = st.chat_input("Describe the clients you want, e.g. USD large time deposits maturing at the end of October")
 
 if user_input:
-    # 显示用户消息
+    # Show the user message
     st.session_state.chat_history.append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 处理并显示 Bot 回复
+    # Process and show the bot reply
     with st.chat_message("assistant"):
-        with st.spinner("处理中..."):
+        with st.spinner("Working..."):
             reply = process_message(user_input)
         st.markdown(reply)
 
     st.session_state.chat_history.append({"role": "assistant", "content": reply})
+
+    # The sidebar is rendered before process_message() runs, so without a rerun
+    # it would keep showing the previous turn's conditions. Rerunning replays the
+    # chat from history (no extra API call) with the sidebar now up to date.
+    st.rerun()

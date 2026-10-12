@@ -61,7 +61,7 @@ Notes:
 5. Full First-Time Startup Sequence (Recommended Order)
 ----------------------------------------
 # Step 1: Navigate to the project directory
-cd C:\Users\ZhuanZ（无密码）\Desktop\financial_rag_agent_poc
+cd C:\Users\ZhuanZ（无密码）\Desktop\smart_screening_poc
 
 # Step 2: Activate the virtual environment
 .\poc_env\Scripts\Activate.ps1

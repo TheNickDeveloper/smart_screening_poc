@@ -1,10 +1,10 @@
 """
 server.py
-MCP Server：CRM Smart Screening
-- Tool 1: screen_customers    根据结构化条件筛选客户
-- Tool 2: generate_leads      为指定名单生成话术 + 产品推荐
+MCP Server: CRM Smart Screening
+- Tool 1: screen_customers    screen clients from structured conditions
+- Tool 2: generate_leads      fetch profiles for talking points + product picks
 
-用法（供 MCP client 以 stdio 启动）：
+Usage (started by an MCP client over stdio):
     python server.py
 """
 
@@ -21,7 +21,7 @@ server = Server("crm-screener")
 
 
 # ---------------------------------------------------------------------------
-# 字段白名单：防止 LLM 幻觉出不存在的字段
+# Field whitelist: stops the LLM from inventing non-existent columns
 # ---------------------------------------------------------------------------
 
 CUSTOMER_FIELDS = {
@@ -37,49 +37,49 @@ HOLDING_FIELDS = {
     "risk_level"
 }
 
-# 各子表字段 → 对应明细表
+# Detail-table fields -> owning detail table
 DETAIL_TABLE_MAP = {
-    # 债券
+    # Bond
     "issuer": "bond_details",
     "coupon_rate": "bond_details",
     "coupon_freq": "bond_details",
     "credit_rating": "bond_details",
     "next_coupon_date": "bond_details",
-    # 股票
+    # Stock
     "ticker": "stock_details",
     "market": "stock_details",
     "shares": "stock_details",
     "cost_price": "stock_details",
     "current_price": "stock_details",
     "sector": "stock_details",
-    # 基金
+    # Fund
     "fund_code": "fund_details",
     "fund_house": "fund_details",
     "fund_category": "fund_details",
     "nav": "fund_details",
     "units": "fund_details",
     "region": "fund_details",
-    # 外汇
+    # FX
     "pair": "fx_details",
     "position_type": "fx_details",
     "forward_rate": "fx_details",
-    # 定存
+    # Time deposit
     "interest_rate": "deposit_details",
     "term_months": "deposit_details",
     "auto_renew": "deposit_details",
-    # 结构性产品
+    # Structured product
     "underlying": "structured_details",
     "barrier_level": "structured_details",
     "strike_price": "structured_details",
     "capital_protected": "structured_details",
-    # 保单
+    # Insurance policy
     "policy_type": "insurance_details",
     "premium": "insurance_details",
     "insured_person": "insurance_details",
     "beneficiary": "insurance_details",
 }
 
-# 子表字段 → 该子表对应哪个 asset_class（用于 EXISTS 里过滤主表）
+# Detail table -> its asset_class (used to constrain the EXISTS subquery)
 DETAIL_ASSET_CLASS = {
     "bond_details": "BOND",
     "stock_details": "STOCK",
@@ -96,11 +96,11 @@ OP_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# SQL 构建
+# SQL building
 # ---------------------------------------------------------------------------
 
 def _render_condition(field: str, operator: str, value):
-    """把单个条件转成 (SQL 片段, 参数列表)"""
+    """Turn a single condition into (SQL fragment, parameter list)."""
     if operator == "in":
         placeholders = ",".join(["?"] * len(value))
         return f"{field} IN ({placeholders})", list(value)
@@ -118,7 +118,7 @@ def _render_condition(field: str, operator: str, value):
 
 
 def _build_customer_condition(cond):
-    """客户主档条件 → (sql_clause, params)"""
+    """Customer master condition -> (sql_clause, params)."""
     field = cond["field"]
     if field not in CUSTOMER_FIELDS:
         raise ValueError(f"Unknown customer field: {field}")
@@ -128,39 +128,25 @@ def _build_customer_condition(cond):
     return clause, params
 
 
-def _build_holding_condition(cond):
-    """
-    持仓条件 → EXISTS 子查询
-    支持两种：
-      - 主表字段 (asset_class, currency, amount_usd, maturity_date...)
-      - 子表字段 (credit_rating, sector, fund_category...)
-    """
+def _holding_predicate(cond, h_alias="h"):
+    """One holding condition as a predicate over an arbitrary holdings alias."""
     field = cond["field"]
     operator = cond["operator"]
     value = cond["value"]
 
     if field in HOLDING_FIELDS:
-        # 纯主表条件
-        sql_field = f"h.{field}"
-        clause, params = _render_condition(sql_field, operator, value)
-        sql = (
-            f"EXISTS (SELECT 1 FROM holdings h "
-            f"WHERE h.customer_id = c.customer_id AND {clause})"
-        )
-        return sql, params
+        return _render_condition(f"{h_alias}.{field}", operator, value)
 
     if field in DETAIL_TABLE_MAP:
-        # 子表条件 → JOIN 明细表
         detail_table = DETAIL_TABLE_MAP[field]
         asset_class = DETAIL_ASSET_CLASS[detail_table]
-        alias = detail_table[0]  # 用首字母当别名，例如 b, s, f
-        sql_field = f"{alias}.{field}"
-        clause, params = _render_condition(sql_field, operator, value)
+        alias = f"{h_alias}{detail_table[0]}"  # unique per (holdings alias, detail table)
+        clause, params = _render_condition(f"{alias}.{field}", operator, value)
         sql = (
-            f"EXISTS (SELECT 1 FROM holdings h "
-            f"JOIN {detail_table} {alias} ON h.holding_id = {alias}.holding_id "
-            f"WHERE h.customer_id = c.customer_id "
-            f"AND h.asset_class = '{asset_class}' "
+            f"EXISTS (SELECT 1 FROM holdings {h_alias} "
+            f"JOIN {detail_table} {alias} ON {h_alias}.holding_id = {alias}.holding_id "
+            f"WHERE {h_alias}.customer_id = c.customer_id "
+            f"AND {h_alias}.asset_class = '{asset_class}' "
             f"AND {clause})"
         )
         return sql, params
@@ -168,10 +154,74 @@ def _build_holding_condition(cond):
     raise ValueError(f"Unknown holding field: {field}")
 
 
+def _build_holding_condition(cond):
+    """
+    Holding condition -> EXISTS subquery.
+    Two kinds are supported:
+      - holdings columns (asset_class, currency, amount_usd, maturity_date...)
+      - detail-table columns (credit_rating, sector, fund_category...)
+    """
+    field = cond["field"]
+
+    if field in HOLDING_FIELDS:
+        # Holdings-table condition
+        clause, params = _render_condition(f"h.{field}", cond["operator"], cond["value"])
+        sql = (
+            f"EXISTS (SELECT 1 FROM holdings h "
+            f"WHERE h.customer_id = c.customer_id AND {clause})"
+        )
+        return sql, params
+
+    if field in DETAIL_TABLE_MAP:
+        # Detail-table condition -> JOIN the detail table
+        return _holding_predicate(cond, "h")
+
+    raise ValueError(f"Unknown holding field: {field}")
+
+
+def _maturity_subquery(holding_conditions, h_alias, joiner):
+    """MIN(maturity_date) over holdings matching the given holding conditions."""
+    parts = [f"{h_alias}.maturity_date IS NOT NULL"]
+    params = []
+
+    # Only constrain status when the screen does not already do so, otherwise a
+    # caller asking for matured holdings would get an empty subquery.
+    if not any(c.get("field") == "status" for c in holding_conditions):
+        parts.append(f"{h_alias}.status = 'active'")
+
+    for cond in holding_conditions:
+        clause, p = _holding_predicate(cond, h_alias)
+        parts.append(f"({clause})")
+        params.extend(p)
+
+    combined = f" {joiner} ".join(parts)
+    sql = (
+        f"(SELECT MIN({h_alias}.maturity_date) FROM holdings {h_alias} "
+        f"WHERE {h_alias}.customer_id = c.customer_id AND {combined})"
+    )
+    return sql, params
+
+
+def _matched_maturity_expr(holding_conditions):
+    """Column expression: the maturity date relevant to this screen.
+
+    Result rows are customer-level, so the maturity date has to be resolved from
+    the holdings that matched. Cross-product screens ("holds A AND holds B")
+    cannot be satisfied by one holding, so COALESCE falls back to the earliest
+    maturity among holdings matching any single condition.
+    """
+    if not holding_conditions:
+        return _maturity_subquery([], "h2", "AND")
+
+    and_sql, and_params = _maturity_subquery(holding_conditions, "h2", "AND")
+    any_sql, any_params = _maturity_subquery(holding_conditions, "h3", "OR")
+    return f"COALESCE({and_sql}, {any_sql})", and_params + any_params
+
+
 def build_sql(conditions, logic="AND"):
     """
     conditions: [{"entity": "customer"/"holding", "field":..., "operator":..., "value":...}]
-    返回 (sql, params)
+    Returns (sql, params).
     """
     clauses, params = [], []
 
@@ -188,22 +238,29 @@ def build_sql(conditions, logic="AND"):
 
     where = f" {logic} ".join(clauses) if clauses else "1=1"
 
+    holding_conditions = [
+        c for c in conditions if c.get("entity", "holding") == "holding"
+    ]
+    maturity_expr, maturity_params = _matched_maturity_expr(holding_conditions)
+
     sql = f"""
     SELECT
         c.customer_id, c.name, c.segment, c.risk_profile,
         c.rm_id, c.rm_name, c.branch, c.contact_phone, c.contact_email,
         a.aum_usd, a.aum_deposit, a.aum_fund, a.aum_bond,
-        a.aum_stock, a.aum_fx, a.aum_structured, a.aum_insurance
+        a.aum_stock, a.aum_fx, a.aum_structured, a.aum_insurance,
+        {maturity_expr} AS matched_maturity_date
     FROM customers c
     JOIN customer_aum a ON a.customer_id = c.customer_id
     WHERE {where}
     ORDER BY a.aum_usd DESC
     """
-    return sql, params
+    # The subquery sits in the SELECT list, so its placeholders bind first.
+    return sql, maturity_params + params
 
 
 def execute_screen(conditions, logic="AND"):
-    """执行筛选并返回结果列表"""
+    """Run the screen and return the result rows."""
     sql, params = build_sql(conditions, logic)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -215,7 +272,7 @@ def execute_screen(conditions, logic="AND"):
 
 
 # ---------------------------------------------------------------------------
-# 审计日志
+# Audit log
 # ---------------------------------------------------------------------------
 
 def write_audit(queried_by, query_text, parsed_conditions,
@@ -243,11 +300,11 @@ def write_audit(queried_by, query_text, parsed_conditions,
 
 
 # ---------------------------------------------------------------------------
-# 客户画像（供 generate_leads 用）
+# Client profiles (used by generate_leads)
 # ---------------------------------------------------------------------------
 
 def fetch_customer_profiles(customer_ids):
-    """拉出客户的完整画像 + 持仓，供话术生成"""
+    """Fetch full profiles plus holdings for talking-point generation."""
     if not customer_ids:
         return []
 
@@ -256,7 +313,7 @@ def fetch_customer_profiles(customer_ids):
     try:
         placeholders = ",".join(["?"] * len(customer_ids))
 
-        # 客户主档 + AUM
+        # Customer master + AUM
         customers = conn.execute(
             f"""SELECT * FROM customer_aum
                 WHERE customer_id IN ({placeholders})""",
@@ -279,7 +336,7 @@ def fetch_customer_profiles(customer_ids):
             holding_list = []
             for h in holdings:
                 h_dict = dict(h)
-                # 附加明细
+                # Attach detail rows
                 hid = h["holding_id"]
                 ac = h["asset_class"]
 
@@ -328,7 +385,7 @@ def fetch_customer_profiles(customer_ids):
 
 
 # ---------------------------------------------------------------------------
-# MCP Tool 定义
+# MCP tool definitions
 # ---------------------------------------------------------------------------
 
 @server.list_tools()
@@ -337,11 +394,14 @@ async def list_tools():
         Tool(
             name="screen_customers",
             description=(
-                "根据结构化条件筛选私人银行客户，返回 short list。"
-                "conditions 为条件数组，每项含 entity(customer/holding)、field、operator、value。"
-                "支持客户维度字段与持仓维度字段（含债券/股票/基金/外汇/定存/结构性/保单明细）。"
-                "金额比较一律使用 amount_usd。多个持仓条件用 AND 时会以 EXISTS 独立判断"
-                "（即『同时持有 A 和 B』语义）。"
+                "Screen private-banking clients from structured conditions and return a short list. "
+                "conditions is an array; each item has entity (customer/holding), field, operator, value. "
+                "Both customer-level and holding-level fields are supported, including bond, stock, "
+                "fund, FX, time-deposit, structured-product and insurance detail columns. "
+                "Always compare amounts on amount_usd. Multiple holding conditions combined with AND "
+                "are evaluated as independent EXISTS subqueries, i.e. the \"holds A and also holds B\" "
+                "semantics. Each returned row also carries matched_maturity_date, the maturity "
+                "date of the holding that satisfied the holding conditions."
             ),
             inputSchema={
                 "type": "object",
@@ -380,8 +440,9 @@ async def list_tools():
         Tool(
             name="generate_leads",
             description=(
-                "为指定客户名单抓取完整画像（AUM、持仓明细、风险评级等），"
-                "返回结构化的客户资料供上层 LLM 生成联系话术与产品推荐。"
+                "Fetch full profiles for the given client IDs (AUM, holding details, risk rating, "
+                "etc.) and return structured client data so the calling LLM can write outreach "
+                "talking points and product recommendations."
             ),
             inputSchema={
                 "type": "object",
@@ -412,7 +473,7 @@ async def call_tool(name: str, arguments: dict):
             return [TextContent(type="text", text=json.dumps(
                 {"error": str(e)}, ensure_ascii=False))]
 
-        # 审计
+        # Audit
         write_audit(
             queried_by=queried_by,
             query_text=query_text,
@@ -452,7 +513,7 @@ async def call_tool(name: str, arguments: dict):
 
 
 # ---------------------------------------------------------------------------
-# 启动
+# Entry point
 # ---------------------------------------------------------------------------
 
 async def main():
